@@ -6,7 +6,7 @@
     <title>EnduroRent Доставка</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-    <link rel="manifest" href="manifest.json">
+    <link rel="manifest" href="data:application/json,{}">
     <meta name="theme-color" content="#0d6efd">
     <style>
         body { padding-bottom: 70px; background: #f8f9fa; }
@@ -15,15 +15,14 @@
 </head>
 <body>
 <div class="container py-3" id="app" style="display:none;">
-
-    <!-- Экран входа (показывается, если не вошли) -->
-    <div id="login-screen">
+    <!-- Экран входа (показывается, если нет сохранённых учётных данных) -->
+    <div id="login-screen" style="display:none;">
         <h3 class="text-center mb-3"><i class="bi bi-truck"></i> Вход для персонала</h3>
         <div id="login-error" class="alert alert-danger" style="display:none;"></div>
         <form id="login-form">
             <div class="mb-3">
                 <label for="username" class="form-label">Логин</label>
-                <input type="text" class="form-control" id="username" name="username" required>
+                <input type="text" class="form-control" id="username" name="username" required autofocus>
             </div>
             <div class="mb-3">
                 <label for="password" class="form-label">Пароль</label>
@@ -33,7 +32,7 @@
         </form>
     </div>
 
-    <!-- Основной экран (после входа) -->
+    <!-- Основной экран (после успешной проверки) -->
     <div id="main-screen" style="display:none;">
         <div class="d-flex justify-content-between align-items-center mb-3">
             <h4 class="mb-0"><i class="bi bi-truck"></i> Доставки</h4>
@@ -68,7 +67,7 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     // ---------- Конфигурация ----------
-    const SERVER_URL = localStorage.getItem('serverUrl') || window.location.origin; // По умолчанию тот же сервер, где открыто (для локальной сети нужно будет сменить)
+    const SERVER_URL = 'http://192.168.0.7:5000';   // <-- укажите актуальный IP вашего сервера
     const statusConfig = {
         courier: {
             label: 'Курьер',
@@ -84,54 +83,41 @@
 
     let currentRole = localStorage.getItem('deliveryRole') || null;
     const roleModal = new bootstrap.Modal(document.getElementById('roleModal'));
-    let isLoggedIn = false;
+    let authHeader = null;   // 'Basic ...'
 
-    // ---------- Функции ----------
-    async function login(e) {
-        e.preventDefault();
-        const username = document.getElementById('username').value;
-        const password = document.getElementById('password').value;
-        if (!username || !password) return;
-
-        // Отправляем форму как обычный браузер
-        const formData = new URLSearchParams();
-        formData.append('username', username);
-        formData.append('password', password);
-
-        try {
-            const resp = await fetch(`${SERVER_URL}/auth/login`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: formData,
-                credentials: 'include' // важно для получения куки сессии
-            });
-
-            if (resp.redirected || resp.ok) {
-                // Проверяем, что у нас есть админский доступ
-                const testResp = await fetch(`${SERVER_URL}/api/admin/auth-test`, { credentials: 'include' });
-                if (testResp.ok) {
-                    isLoggedIn = true;
-                    showMain();
-                } else {
-                    document.getElementById('login-error').textContent = 'Недостаточно прав (требуется администратор)';
-                    document.getElementById('login-error').style.display = 'block';
-                }
-            } else {
-                document.getElementById('login-error').textContent = 'Неверный логин или пароль';
-                document.getElementById('login-error').style.display = 'block';
-            }
-        } catch (error) {
-            document.getElementById('login-error').textContent = 'Ошибка соединения с сервером';
-            document.getElementById('login-error').style.display = 'block';
+    // ---------- Вспомогательные функции ----------
+    function getAuthHeader() {
+        const creds = localStorage.getItem('creds');  // храним в формате 'username:password'
+        if (creds) {
+            return 'Basic ' + btoa(creds);
         }
+        return null;
     }
 
-    function logout() {
-        fetch(`${SERVER_URL}/auth/logout`, { credentials: 'include' }).finally(() => {
-            isLoggedIn = false;
+    function saveCredentials(username, password) {
+        localStorage.setItem('creds', `${username}:${password}`);
+        authHeader = 'Basic ' + btoa(`${username}:${password}`);
+    }
+
+    function clearCredentials() {
+        localStorage.removeItem('creds');
+        authHeader = null;
+    }
+
+    async function apiFetch(url, options = {}) {
+        const headers = options.headers || {};
+        if (authHeader) {
+            headers['Authorization'] = authHeader;
+        }
+        const resp = await fetch(`${SERVER_URL}${url}`, { ...options, headers });
+        if (resp.status === 401) {
+            // сохранённые учётные данные устарели или неверны
+            clearCredentials();
             document.getElementById('login-screen').style.display = 'block';
             document.getElementById('main-screen').style.display = 'none';
-        });
+            return { error: 'Unauthorized' };
+        }
+        return resp;
     }
 
     function showMain() {
@@ -142,6 +128,12 @@
         } else {
             roleModal.show();
         }
+    }
+
+    function logout() {
+        clearCredentials();
+        document.getElementById('login-screen').style.display = 'block';
+        document.getElementById('main-screen').style.display = 'none';
     }
 
     function setRole(role) {
@@ -159,11 +151,8 @@
     }
 
     async function loadDeliveries() {
-        const resp = await fetch(`${SERVER_URL}/api/admin/deliveries`, { credentials: 'include' });
-        if (!resp.ok) {
-            document.getElementById('delivery-list').innerHTML = '<div class="alert alert-danger">Ошибка загрузки</div>';
-            return;
-        }
+        const resp = await apiFetch('/api/admin/deliveries');
+        if (resp.error) return;
         const data = await resp.json();
         const list = document.getElementById('delivery-list');
         const config = statusConfig[currentRole];
@@ -185,36 +174,66 @@
                 const newStatus = e.target.value;
                 const formData = new FormData();
                 formData.append('delivery_status', newStatus);
-                await fetch(`${SERVER_URL}/api/booking/update_delivery/${b.id}`, {
+                await apiFetch(`/api/booking/update_delivery/${b.id}`, {
                     method: 'POST',
-                    body: formData,
-                    credentials: 'include'
+                    body: formData
                 });
             });
             list.appendChild(card);
         });
     }
 
-    // ---------- Старт ----------
-    document.getElementById('app').style.display = 'block';
-    document.getElementById('login-form').addEventListener('submit', login);
+    // ---------- Обработка входа ----------
+    document.getElementById('login-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const username = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+        if (!username || !password) return;
 
-    // Попробуем проверить, есть ли уже сессия (если пользователь уже залогинен)
-    fetch(`${SERVER_URL}/api/admin/auth-test`, { credentials: 'include' })
-        .then(resp => {
+        // Пробуем авторизоваться
+        const testAuth = 'Basic ' + btoa(`${username}:${password}`);
+        try {
+            const resp = await fetch(`${SERVER_URL}/api/admin/auth-test`, {
+                headers: { 'Authorization': testAuth }
+            });
             if (resp.ok) {
-                isLoggedIn = true;
+                saveCredentials(username, password);
                 showMain();
             } else {
-                document.getElementById('login-screen').style.display = 'block';
+                document.getElementById('login-error').textContent = 'Неверный логин или пароль';
+                document.getElementById('login-error').style.display = 'block';
             }
-        })
-        .catch(() => {
-            document.getElementById('login-screen').style.display = 'block';
-        });
+        } catch (e) {
+            document.getElementById('login-error').textContent = 'Ошибка соединения с сервером';
+            document.getElementById('login-error').style.display = 'block';
+        }
+    });
 
+    // ---------- Инициализация ----------
+    document.getElementById('app').style.display = 'block';
+    authHeader = getAuthHeader();
+    if (authHeader) {
+        // Проверяем сохранённую сессию
+        fetch(`${SERVER_URL}/api/admin/auth-test`, { headers: { 'Authorization': authHeader } })
+            .then(resp => {
+                if (resp.ok) {
+                    showMain();
+                } else {
+                    document.getElementById('login-screen').style.display = 'block';
+                }
+            })
+            .catch(() => {
+                document.getElementById('login-screen').style.display = 'block';
+            });
+    } else {
+        document.getElementById('login-screen').style.display = 'block';
+    }
+
+    // Регистрируем Service Worker для офлайн-доступа (не обязательно, но для PVA)
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('sw.js');
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('sw.js').catch(() => {});
+        });
     }
 </script>
 </body>
