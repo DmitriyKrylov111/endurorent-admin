@@ -9,216 +9,209 @@
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#0d6efd">
     <style>
-        body { padding-bottom: 70px; }
-        .delivery-card { border-radius: 1rem; margin-bottom: 1rem; transition: all 0.2s; }
-        .delivery-card:active { transform: scale(0.98); }
+        body { padding-bottom: 70px; background: #f8f9fa; }
+        .delivery-card { border-radius: 1rem; margin-bottom: 1rem; }
     </style>
 </head>
-<body class="bg-light">
+<body>
+<div class="container py-3" id="app" style="display:none;">
 
-<div class="container py-3" id="app-content" style="display:none;">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <h4 class="mb-0"><i class="bi bi-truck"></i> Доставки</h4>
-        <button class="btn btn-outline-secondary btn-sm" onclick="changeRole()">
-            <i class="bi bi-arrow-repeat"></i> Сменить роль
-        </button>
-    </div>
-
-    <!-- Настройки сервера -->
-    <div class="card mb-3">
-        <div class="card-body">
-            <label class="form-label">Адрес сервера</label>
-            <input type="text" class="form-control mb-2" id="server-url" placeholder="https://ваш-сервер.com">
-            <div class="input-group mb-2">
-                <input type="text" class="form-control" id="auth-login" placeholder="Логин">
-                <input type="password" class="form-control" id="auth-password" placeholder="Пароль">
+    <!-- Экран входа (показывается, если не вошли) -->
+    <div id="login-screen">
+        <h3 class="text-center mb-3"><i class="bi bi-truck"></i> Вход для персонала</h3>
+        <div id="login-error" class="alert alert-danger" style="display:none;"></div>
+        <form id="login-form">
+            <div class="mb-3">
+                <label for="username" class="form-label">Логин</label>
+                <input type="text" class="form-control" id="username" name="username" required>
             </div>
-            <button class="btn btn-primary w-100" onclick="login()">Войти</button>
+            <div class="mb-3">
+                <label for="password" class="form-label">Пароль</label>
+                <input type="password" class="form-control" id="password" name="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Войти</button>
+        </form>
+    </div>
+
+    <!-- Основной экран (после входа) -->
+    <div id="main-screen" style="display:none;">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4 class="mb-0"><i class="bi bi-truck"></i> Доставки</h4>
+            <div>
+                <button class="btn btn-outline-secondary btn-sm" onclick="changeRole()">
+                    <i class="bi bi-arrow-repeat"></i>
+                </button>
+                <button class="btn btn-outline-danger btn-sm" onclick="logout()">Выйти</button>
+            </div>
         </div>
+        <div id="delivery-list"></div>
     </div>
 
-    <div id="delivery-list"></div>
-</div>
-
-<!-- Модальное окно выбора роли -->
-<div class="modal fade" id="roleModal" data-bs-backdrop="static" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title">Выберите роль</h5>
-      </div>
-      <div class="modal-body d-grid gap-3">
-        <button class="btn btn-outline-primary btn-lg" onclick="setRole('courier')">
-            <i class="bi bi-bicycle"></i> Курьер
-        </button>
-        <button class="btn btn-outline-success btn-lg" onclick="setRole('warehouse')">
-            <i class="bi bi-box-seam"></i> Работник склада
-        </button>
+    <!-- Модальное окно выбора роли -->
+    <div class="modal fade" id="roleModal" data-bs-backdrop="static" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header"><h5 class="modal-title">Выберите роль</h5></div>
+          <div class="modal-body d-grid gap-3">
+            <button class="btn btn-outline-primary btn-lg" onclick="setRole('courier')">
+                <i class="bi bi-bicycle"></i> Курьер
+            </button>
+            <button class="btn btn-outline-success btn-lg" onclick="setRole('warehouse')">
+                <i class="bi bi-box-seam"></i> Работник склада
+            </button>
+          </div>
+        </div>
       </div>
     </div>
-  </div>
 </div>
-
-<nav class="navbar fixed-bottom bg-dark navbar-dark">
-    <div class="container-fluid justify-content-center">
-        <span class="navbar-text text-light" id="role-indicator">Роль не выбрана</span>
-    </div>
-</nav>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+    // ---------- Конфигурация ----------
+    const SERVER_URL = localStorage.getItem('serverUrl') || window.location.origin; // По умолчанию тот же сервер, где открыто (для локальной сети нужно будет сменить)
     const statusConfig = {
         courier: {
             label: 'Курьер',
-            icon: 'bi bi-bicycle',
             available: ['loaded', 'in_transit', 'delivered'],
-            labels: {
-                'loaded': 'Загружен в машину',
-                'in_transit': 'В пути',
-                'delivered': 'Доставлен'
-            }
+            labels: {'loaded':'Загружен в машину', 'in_transit':'В пути', 'delivered':'Доставлен'}
         },
         warehouse: {
             label: 'Работник склада',
-            icon: 'bi bi-box-seam',
             available: ['created', 'shipped', 'courier'],
-            labels: {
-                'created': 'Заказ создан',
-                'shipped': 'Отгружен со склада',
-                'courier': 'Передан курьеру'
-            }
+            labels: {'created':'Заказ создан', 'shipped':'Отгружен со склада', 'courier':'Передан курьеру'}
         }
     };
 
-    let currentRole = localStorage.getItem('role') || null;
-    let authToken = localStorage.getItem('token');
-    let serverUrl = localStorage.getItem('server') || '';
+    let currentRole = localStorage.getItem('deliveryRole') || null;
     const roleModal = new bootstrap.Modal(document.getElementById('roleModal'));
+    let isLoggedIn = false;
 
-    document.getElementById('server-url').value = serverUrl;
+    // ---------- Функции ----------
+    async function login(e) {
+        e.preventDefault();
+        const username = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+        if (!username || !password) return;
 
-    async function apiCall(path, options = {}) {
-        const url = `${serverUrl}/api/admin/${path}`;
-        const headers = {};
-        if (authToken) headers['Authorization'] = `Basic ${authToken}`;
-        return await fetch(url, { ...options, headers });
+        // Отправляем форму как обычный браузер
+        const formData = new URLSearchParams();
+        formData.append('username', username);
+        formData.append('password', password);
+
+        try {
+            const resp = await fetch(`${SERVER_URL}/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: formData,
+                credentials: 'include' // важно для получения куки сессии
+            });
+
+            if (resp.redirected || resp.ok) {
+                // Проверяем, что у нас есть админский доступ
+                const testResp = await fetch(`${SERVER_URL}/api/admin/auth-test`, { credentials: 'include' });
+                if (testResp.ok) {
+                    isLoggedIn = true;
+                    showMain();
+                } else {
+                    document.getElementById('login-error').textContent = 'Недостаточно прав (требуется администратор)';
+                    document.getElementById('login-error').style.display = 'block';
+                }
+            } else {
+                document.getElementById('login-error').textContent = 'Неверный логин или пароль';
+                document.getElementById('login-error').style.display = 'block';
+            }
+        } catch (error) {
+            document.getElementById('login-error').textContent = 'Ошибка соединения с сервером';
+            document.getElementById('login-error').style.display = 'block';
+        }
     }
 
-    function showApp() {
-        document.getElementById('app-content').style.display = 'block';
-        document.getElementById('role-indicator').textContent = 
-            `${statusConfig[currentRole].label} (подключено)`;
-        loadDeliveries();
+    function logout() {
+        fetch(`${SERVER_URL}/auth/logout`, { credentials: 'include' }).finally(() => {
+            isLoggedIn = false;
+            document.getElementById('login-screen').style.display = 'block';
+            document.getElementById('main-screen').style.display = 'none';
+        });
+    }
+
+    function showMain() {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('main-screen').style.display = 'block';
+        if (currentRole) {
+            loadDeliveries();
+        } else {
+            roleModal.show();
+        }
     }
 
     function setRole(role) {
         currentRole = role;
-        localStorage.setItem('role', role);
+        localStorage.setItem('deliveryRole', role);
         roleModal.hide();
-        if (authToken && serverUrl) {
-            showApp();
-        } else {
-            document.getElementById('app-content').style.display = 'block';
-            document.getElementById('role-indicator').textContent = 
-                `${statusConfig[currentRole].label} (не подключено)`;
-        }
+        loadDeliveries();
     }
 
     function changeRole() {
-        localStorage.removeItem('role');
+        localStorage.removeItem('deliveryRole');
+        currentRole = null;
         roleModal.show();
-        document.getElementById('app-content').style.display = 'none';
-        document.getElementById('role-indicator').textContent = 'Роль не выбрана';
-    }
-
-    async function login() {
-        serverUrl = document.getElementById('server-url').value.replace(/\/$/, '');
-        const login = document.getElementById('auth-login').value;
-        const password = document.getElementById('auth-password').value;
-        if (!serverUrl || !login || !password) return alert('Заполните все поля');
-
-        localStorage.setItem('server', serverUrl);
-        authToken = btoa(`${login}:${password}`);
-        localStorage.setItem('token', authToken);
-
-        try {
-            const testResp = await fetch(`${serverUrl}/api/admin/auth-test`, {
-                headers: { 'Authorization': `Basic ${authToken}` }
-            });
-            if (!testResp.ok) throw new Error('Ошибка входа');
-            if (currentRole) {
-                showApp();
-            }
-        } catch (e) {
-            alert('Неверный адрес сервера или учётные данные');
-            authToken = null;
-            localStorage.removeItem('token');
-        }
+        document.getElementById('delivery-list').innerHTML = '';
     }
 
     async function loadDeliveries() {
-        if (!authToken || !currentRole) return;
-        try {
-            const resp = await apiCall('deliveries');
-            const data = await resp.json();
-            const list = document.getElementById('delivery-list');
-            if (!data || data.error) {
-                list.innerHTML = '<div class="alert alert-danger">Ошибка загрузки</div>';
-                return;
-            }
-
-            const config = statusConfig[currentRole];
-            list.innerHTML = '';
-
-            data.forEach(b => {
-                const card = document.createElement('div');
-                card.className = 'card delivery-card shadow-sm';
-                const optionsHtml = config.available.map(status =>
-                    `<option value="${status}" ${b.delivery_status === status ? 'selected' : ''}>
-                        ${config.labels[status]}
-                    </option>`
-                ).join('');
-
-                card.innerHTML = `
-                    <div class="card-body">
-                        <h5>#${b.id} – ${b.bike}</h5>
-                        <p><small>${b.address}, ${b.phone}</small></p>
-                        <p>${b.date} ${b.time}</p>
-                        <select class="form-select" data-id="${b.id}">
-                            ${optionsHtml}
-                        </select>
-                    </div>
-                `;
-
-                card.querySelector('select').addEventListener('change', async (e) => {
-                    const newStatus = e.target.value;
-                    const formData = new FormData();
-                    formData.append('delivery_status', newStatus);
-                    await fetch(`${serverUrl}/admin/booking/update_delivery/${b.id}`, {
-                        method: 'POST',
-                        body: formData,
-                        headers: { 'Authorization': `Basic ${authToken}` }
-                    });
-                    if (navigator.vibrate) navigator.vibrate(50);
+        const resp = await fetch(`${SERVER_URL}/api/admin/deliveries`, { credentials: 'include' });
+        if (!resp.ok) {
+            document.getElementById('delivery-list').innerHTML = '<div class="alert alert-danger">Ошибка загрузки</div>';
+            return;
+        }
+        const data = await resp.json();
+        const list = document.getElementById('delivery-list');
+        const config = statusConfig[currentRole];
+        list.innerHTML = '';
+        data.forEach(b => {
+            const card = document.createElement('div');
+            card.className = 'card delivery-card shadow-sm';
+            card.innerHTML = `
+                <div class="card-body">
+                    <h5>#${b.id} – ${b.bike}</h5>
+                    <p><small>${b.address}, ${b.phone}</small></p>
+                    <p>${b.date} ${b.time}</p>
+                    <select class="form-select" data-id="${b.id}">
+                        ${config.available.map(s => `<option value="${s}" ${b.delivery_status === s ? 'selected' : ''}>${config.labels[s]}</option>`).join('')}
+                    </select>
+                </div>
+            `;
+            card.querySelector('select').addEventListener('change', async (e) => {
+                const newStatus = e.target.value;
+                const formData = new FormData();
+                formData.append('delivery_status', newStatus);
+                await fetch(`${SERVER_URL}/api/booking/update_delivery/${b.id}`, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'include'
                 });
-
-                list.appendChild(card);
             });
-        } catch (e) {
-            document.getElementById('delivery-list').innerHTML = 
-                '<div class="alert alert-danger">Ошибка соединения</div>';
-        }
+            list.appendChild(card);
+        });
     }
 
-    if (authToken && serverUrl) {
-        if (currentRole) {
-            showApp();
-        } else {
-            roleModal.show();
-        }
-    } else {
-        roleModal.show();
-    }
+    // ---------- Старт ----------
+    document.getElementById('app').style.display = 'block';
+    document.getElementById('login-form').addEventListener('submit', login);
+
+    // Попробуем проверить, есть ли уже сессия (если пользователь уже залогинен)
+    fetch(`${SERVER_URL}/api/admin/auth-test`, { credentials: 'include' })
+        .then(resp => {
+            if (resp.ok) {
+                isLoggedIn = true;
+                showMain();
+            } else {
+                document.getElementById('login-screen').style.display = 'block';
+            }
+        })
+        .catch(() => {
+            document.getElementById('login-screen').style.display = 'block';
+        });
 
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('sw.js');
